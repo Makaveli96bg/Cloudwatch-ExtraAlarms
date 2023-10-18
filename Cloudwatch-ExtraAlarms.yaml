@@ -1,0 +1,336 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudWatch Additional Alarms'
+Parameters:
+  SNSTopicArn:
+    Type: String
+    Description: "SNSTopic Arn to report Alarm"
+  CWLogGroupName:
+    Type: String
+    Description: "CloudTrail LogGroupName"
+
+Resources:
+  rCWAlarmNoMFA:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: no_mfa_console_logins
+      AlarmDescription: >-
+        A CloudWatch Alarm that triggers if there is a Management Console
+        sign-in without MFA.
+      MetricName: ConsoleSigninWithoutMFA
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - Ref: SNSTopicArn
+      TreatMissingData: notBreaching
+  rCWMetricFilterNoMFA:
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      LogGroupName: !Ref CWLogGroupName
+#        {($.eventName = "ConsoleLogin") && ($.additionalEventData.MFAUsed != "Yes")}
+      FilterPattern: >-
+        { ($.eventName = "ConsoleLogin") && ($.additionalEventData.MFAUsed != "Yes") && 
+        ($.responseElements.ConsoleLogin != "Failure") &&
+        ($.additionalEventData.SamlProviderArn NOT EXISTS) }
+      MetricTransformations:
+        - MetricValue: '1'
+          MetricNamespace: CloudTrailMetrics
+          MetricName: ConsoleSigninWithoutMFA
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  rCWAlarmUnApiCalls:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: unauthorized_api_calls
+      AlarmDescription: >-
+        A CloudWatch Alarm that triggers if Multiple unauthorized actions or
+        logins attempted.
+      MetricName: UnauthorizedAttemptCount
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - Ref: SNSTopicArn
+      TreatMissingData: notBreaching
+  rCWMetricFilterUnApiCalls:
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      LogGroupName: !Ref CWLogGroupName
+      FilterPattern: >-
+        { ($.errorCode = "*UnauthorizedOperation") || ($.errorCode =
+        "AccessDenied*") }
+      MetricTransformations:
+        - MetricValue: '1'
+          MetricNamespace: CloudTrailMetrics
+          MetricName: UnauthorizedAttemptCount
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  rEventRuleCTChanges:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: detect-cloudtrail-changes
+      Description: >-
+        A CloudWatch Event Rule that detects changes to CloudTrail configutation
+        and publishes change events to an SNS topic for notification.
+      State: ENABLED
+      Targets:
+        - Arn:
+            Ref: SNSTopicArn
+          Id: target-id1
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - cloudtrail.amazonaws.com
+          eventName:
+            - StopLogging
+            - DeleteTrail
+            - UpdateTrail
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  rEventRuleCMKDel:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: detect-kms-cmk-deletion
+      Description: >-
+        A CloudWatch Event Rule that triggers on AWS KMS Customer Master Key
+        (CMK) deletion events.
+      State: ENABLED
+      Targets:
+        - Arn:
+            Ref: SNSTopicArn
+          Id: target-id1
+      EventPattern:
+        detail-type:
+          - KMS CMK Deletion
+        source:
+          - aws.kms
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  rEventRuleCMKOps:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: detect-kms-cmk-operations
+      Description: >-
+        A CloudWatch Event Rule that detects KMS Customer Master Key (CMK)
+        changes and publishes change events to an SNS topic for notification.
+        Events include key creation, deletion, or key enabling/disabling
+        operations, imported key material operations, as well as updates to CMK
+        key policies.
+      State: ENABLED
+      Targets:
+        - Arn:
+            Ref: SNSTopicArn
+          Id: target-id1
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - kms.amazonaws.com
+          eventName:
+            - DisableKey
+            - ScheduleKeyDeletion
+            - CancelKeyDeletion
+            - CreateKey
+            - CreateAlias
+            - EnableKey
+            - PutKeyPolicy
+            - ImportKeyMaterial
+            - DeleteImportedKeyMaterial
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  rCWAlarmS3Changes:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: s3_changes
+      AlarmDescription: A CloudWatch Alarm that triggers when changes are made to an S3 Bucket.
+      MetricName: S3BucketActivityEventCount
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: '300'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - Ref: SNSTopicArn
+      TreatMissingData: notBreaching
+  rCWMetricFilterS3Changes:
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      LogGroupName: !Ref CWLogGroupName
+      FilterPattern: >-
+        { ($.eventSource = s3.amazonaws.com) && (($.eventName = PutBucketAcl) ||
+        ($.eventName = PutBucketPolicy) || ($.eventName = PutBucketCors) ||
+        ($.eventName = PutBucketLifecycle) || ($.eventName =
+        PutBucketReplication) || ($.eventName = DeleteBucketPolicy) ||
+        ($.eventName = DeleteBucketCors) || ($.eventName =
+        DeleteBucketLifecycle) || ($.eventName = DeleteBucketReplication)) }
+      MetricTransformations:
+        - MetricValue: '1'
+          MetricNamespace: CloudTrailMetrics
+          MetricName: S3BucketActivityEventCount
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  rEventRuleAWSConfigChanges:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: detect-config-changes
+      Description: >-
+        A CloudWatch Event Rule that detects changes to AWS Config and publishes
+        change events to an SNS topic for notification.
+      State: ENABLED
+      Targets:
+        - Arn:
+            Ref: SNSTopicArn
+          Id: target-id1
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - config.amazonaws.com
+          eventName:
+            - PutConfigurationRecorder
+            - StopConfigurationRecorder
+            - DeleteDeliveryChannel
+            - PutDeliveryChannel
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  rEventRuleNetworkChanges:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: detect-network-changes
+      Description: >-
+        A CloudWatch Event Rule that detects changes to network configuration
+        and publishes change events to an SNS topic for notification.
+      State: ENABLED
+      Targets:
+        - Arn:
+            Ref: SNSTopicArn
+          Id: target-id1
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - ec2.amazonaws.com
+          eventName:
+            - AttachInternetGateway
+            - AssociateRouteTable
+            - CreateCustomerGateway
+            - CreateInternetGateway
+            - CreateRoute
+            - CreateRouteTable
+            - DeleteCustomerGateway
+            - DeleteInternetGateway
+            - DeleteRoute
+            - DeleteRouteTable
+            - DeleteDhcpOptions
+            - DetachInternetGateway
+            - DisassociateRouteTable
+            - ReplaceRoute
+            - ReplaceRouteTableAssociation
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  rCWAlarmIGWChanges:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: igw_changes
+      AlarmDescription: >-
+        A CloudWatch Alarm that triggers when changes are made to an Internet
+        Gateway in a VPC.
+      MetricName: GatewayEventCount
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: '300'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - Ref: SNSTopicArn
+      TreatMissingData: notBreaching
+  rCWMetricFilterIGWChanges:
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      LogGroupName: !Ref CWLogGroupName
+      FilterPattern: >-
+        { ($.eventName = CreateCustomerGateway) || ($.eventName =
+        DeleteCustomerGateway) || ($.eventName = AttachInternetGateway) ||
+        ($.eventName = CreateInternetGateway) || ($.eventName =
+        DeleteInternetGateway) || ($.eventName = DetachInternetGateway) }
+      MetricTransformations:
+        - MetricValue: '1'
+          MetricNamespace: CloudTrailMetrics
+          MetricName: GatewayEventCount
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  rCWAlarmRTChanges:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: vpc_routetable_changes
+      AlarmDescription: >-
+        A CloudWatch Alarm that triggers when changes are made to a VPC's Route
+        Table.
+      MetricName: VpcRouteTableEventCount
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: '300'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - Ref: SNSTopicArn
+      TreatMissingData: notBreaching
+  rCWMetricFilterRTChanges:
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      LogGroupName: !Ref CWLogGroupName
+      FilterPattern: >-
+        { ($.eventName = AssociateRouteTable) || ($.eventName = CreateRoute) ||
+        ($.eventName = CreateRouteTable) || ($.eventName = DeleteRoute) ||
+        ($.eventName = DeleteRouteTable) || ($.eventName = ReplaceRoute) ||
+        ($.eventName = ReplaceRouteTableAssociation) || ($.eventName =
+        DisassociateRouteTable) }
+      MetricTransformations:
+        - MetricValue: '1'
+          MetricNamespace: CloudTrailMetrics
+          MetricName: VpcRouteTableEventCount
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  rCWAlarmVPCChanges:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: vpc_changes
+      AlarmDescription: A CloudWatch Alarm that triggers when changes are made to a VPC.
+      MetricName: VpcEventCount
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: '300'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - Ref: SNSTopicArn
+      TreatMissingData: notBreaching
+  rCWMetricFilterVPCChanges:
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      LogGroupName: !Ref CWLogGroupName
+      FilterPattern: >-
+        { ($.eventName = CreateVpc) || ($.eventName = DeleteVpc) || ($.eventName
+        = ModifyVpcAttribute) || ($.eventName = AcceptVpcPeeringConnection) ||
+        ($.eventName = CreateVpcPeeringConnection) || ($.eventName =
+        DeleteVpcPeeringConnection) || ($.eventName =
+        RejectVpcPeeringConnection) || ($.eventName = AttachClassicLinkVpc) ||
+        ($.eventName = DetachClassicLinkVpc) || ($.eventName =
+        DisableVpcClassicLink) || ($.eventName = EnableVpcClassicLink) }
+      MetricTransformations:
+        - MetricValue: '1'
+          MetricNamespace: CloudTrailMetrics
+          MetricName: VpcEventCount
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+
+
